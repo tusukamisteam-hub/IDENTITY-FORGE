@@ -1,0 +1,5 @@
+{
+  "name": "IdentityForge",
+  "description": "A character-consistent image generation tool. Upload a reference photo to lock identity, then generate unlimited variations in different styles and settings.",
+  "requestFramePermissions": []
+}
