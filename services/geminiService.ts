@@ -60,13 +60,17 @@ export const generateCharacterImage = async (
   prompt: string,
   aspectRatio: AspectRatio
 ): Promise<string[]> => {
-  if (!process.env.API_KEY) throw new Error("API Key is missing.");
+  // Obtain key from environment and use mandatory named parameter initialization.
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) throw new Error("API Key is missing. Please select one using the key icon.");
+  
   if (referenceImages.length === 0) throw new Error("No reference images provided.");
 
-  // Resize images to ensure we don't hit payload limits (Gemini has request size caps)
+  // Resize images to ensure we don't hit payload limits
   const resizedReferences = await Promise.all(referenceImages.map(img => resizeImage(img)));
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // Instantiate client INSIDE the function to use the most up-to-date API key.
+  const ai = new GoogleGenAI({ apiKey: apiKey });
   
   const imageParts = resizedReferences.map(img => {
     const { data, mimeType } = extractBase64(img);
@@ -75,29 +79,31 @@ export const generateCharacterImage = async (
     };
   });
 
+  // Use Gemini 2.5 Flash for high compatibility and speed.
+  // We switch back to Flash from Pro to avoid 403 errors for users on free/standard keys.
+  const modelName = 'gemini-2.5-flash-image';
+
   const basePrompt = `
     CONTEXT: Character-consistent photorealistic portraiture.
     TASK: Generate a single high-quality image based on the provided reference photos.
-    IDENTITY: The person in the generated image MUST have identical facial features and identity as the references.
+    IDENTITY: The person in the generated image MUST have identical facial features, skin texture, and core identity as the references.
     SCENE: ${prompt || "Professional studio portrait with clean lighting."}
-    QUALITY: Photorealistic, sharp focus, 8k textures, cinematic lighting.
+    QUALITY: Photorealistic, high-resolution, sharp focus, cinematic lighting.
   `.trim();
 
-  // Define 2 distinct facial expressions for the variations
   const variations = [
-    "EXPRESSION: Confident, professional, and composed. Direct eye contact.",
-    "EXPRESSION: Warm, happy, and engaging smile. Approachable and friendly energy."
+    "EXPRESSION: Professional and confident. Subtle smile, direct gaze.",
+    "EXPRESSION: Warm, cheerful, and approachable smile. Candid energy."
   ];
 
   const results: string[] = [];
 
-  // Sequential execution ensures we don't hit 429 rate limits on standard API tiers
   for (const expressionInstruction of variations) {
     try {
       const fullPrompt = `${basePrompt}\n\n${expressionInstruction}`;
       
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
+        model: modelName,
         contents: {
           parts: [
             ...imageParts,
@@ -105,7 +111,10 @@ export const generateCharacterImage = async (
           ],
         },
         config: {
-          imageConfig: { aspectRatio: aspectRatio },
+          imageConfig: { 
+            aspectRatio: aspectRatio
+            // imageSize is NOT supported by gemini-2.5-flash-image, removed to avoid config errors.
+          },
         },
       });
 
@@ -122,20 +131,27 @@ export const generateCharacterImage = async (
       }
       
       if (!foundImage) {
-        console.warn("No image part found in model response for variation.");
+        console.warn("No image data found in response parts.");
       }
 
-      // Small delay to prevent rate limiting
+      // Respect standard rate limits
       if (results.length < variations.length) {
-        await new Promise(r => setTimeout(r, 600));
+        await new Promise(r => setTimeout(r, 1200));
       }
     } catch (error: any) {
-      console.error("Single generation attempt failed:", error);
+      console.error("Variation generation failed:", error);
+      // Re-throw specific errors for App.tsx to handle (403, 429, etc.)
+      const errorStr = JSON.stringify(error);
+      if (errorStr.includes("403") || errorStr.includes("PERMISSION_DENIED") || 
+          errorStr.includes("429") || errorStr.includes("RESOURCE_EXHAUSTED") || 
+          errorStr.includes("Requested entity was not found")) {
+        throw error;
+      }
     }
   }
 
   if (results.length === 0) {
-    throw new Error("Failed to generate any images. This may be due to safety filters or connection issues. Please try adjusting your prompt or reference photos.");
+    throw new Error("Generation failed. This often happens due to API key restrictions or safety filters. Please try connecting a Paid API Key.");
   }
 
   return results;
